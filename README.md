@@ -31,19 +31,19 @@
 | executor | 实施明确分配的范围 | 单一写入者 |
 | verifier | 独立复核范围和结果 | 不替执行者补写 |
 
-## 模型与并发示例
+## 并发示例
 
-示例使用 `gpt-5.6-luna` 与 `medium` reasoning effort，适合成本敏感且仍需要规划、工具调用和多步判断的任务。模型名称是配置值，不是终端命令。并发上限建议从 2 个子 Agent 开始；资源紧张时回落到 1 个。
+并发上限建议从 2 个子 Agent 开始；资源紧张时回落到 1 个。具体模型由使用者按任务复杂度、成本和可用性自行选择。
 
 ```toml
-model = "gpt-5.6-luna"
-model_reasoning_effort = "medium"
+model = "<your-model>"
+model_reasoning_effort = "<your-reasoning-level>"
 
 [agents]
 enabled = true
 max_concurrent_threads_per_session = 2
-default_subagent_model = "gpt-5.6-luna"
-default_subagent_reasoning_effort = "medium"
+default_subagent_model = "<your-model>"
+default_subagent_reasoning_effort = "<your-reasoning-level>"
 ```
 
 ## 证据与完成层级

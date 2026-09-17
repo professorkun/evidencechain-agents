@@ -50,7 +50,7 @@ uv run python -m pytest
 
 ## 路线图
 
-详见 [路线图](docs/roadmap.md)。下一阶段将加入隔离 worktree、文件范围锁、单写者合并和任务状态持久化；在验证稳定后再考虑真实模型调用。
+详见 [路线图](docs/roadmap.md)。第二期正在实现隔离 worktree、任务合同、文件范围锁、独立验证和单写者合并门禁；所有合并仍要求用户明确确认。在验证稳定后再考虑真实模型调用。
 
 ## Git 分支与回滚
 
@@ -58,6 +58,10 @@ uv run python -m pytest
 - `codex/phase-1`：第一期开发线；后续每个阶段使用新的 `codex/` 前缀分支。
 - 每次任务先在独立分支或 worktree 实施，再由验证角色复跑测试；通过后才合并到 `main`。
 - 回滚优先使用 `git revert` 保留可追溯历史，不以覆盖式重置替代正常回滚。
+
+## 第二期安全门禁
+
+`examples/contracts/phase2-sample.json` 展示任务合同的最小格式。先验证合同；只有在调用者传入显式的 `--approve-worktree` 后，第二期工具才允许建立任务分支和隔离 worktree。它不会自动修改 `main` 或自动合并。
 
 ## 安全边界
 

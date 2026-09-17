@@ -1,0 +1,20 @@
+{
+  "task_id": "sample-calculator-test",
+  "base_ref": "main",
+  "allowed_paths": [
+    "sample_target",
+    "tests/test_calculator.py"
+  ],
+  "test_commands": [
+    [
+      "python",
+      "-m",
+      "pytest",
+      "tests/test_calculator.py"
+    ]
+  ],
+  "acceptance_criteria": [
+    "目标测试通过",
+    "修改不超出允许范围"
+  ]
+}

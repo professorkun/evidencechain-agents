@@ -18,6 +18,7 @@ from app.git_workflow import (
     prepare_task_worktree,
     release_task_lock,
     serialize_lease,
+    verified_worktree_commit,
     verify_task_worktree,
 )
 
@@ -153,12 +154,18 @@ def create_app(
             if task["status"] != "running" or not task["git_lease"]:
                 raise StateError("only a running Git task with an active worktree can be verified")
             board.transition(task_id, "verifying", actor="agent:验证 Agent")
-            result, plan = verify_task_worktree(task_id, task["git_lease"])
+            try:
+                result, plan = verify_task_worktree(task_id, task["git_lease"])
+                verified_commit = verified_worktree_commit(task_id, task["git_lease"])
+            except ValueError as error:
+                board.save_agent_run(task_id, "验证 Agent", "git_verification", "failed", str(error))
+                return board.transition(task_id, "failed", actor="agent:验证 Agent")
             passed = result.passed and bool(result.changed_files)
             content = plan + "\n\n测试结果：\n" + "\n\n".join(result.command_results)
             board.save_agent_run(task_id, "验证 Agent", "git_verification", "completed" if passed else "failed", content)
             if not passed:
                 return board.transition(task_id, "failed", actor="agent:验证 Agent")
+            board.update_git_lease(task_id, verified_commit=verified_commit)
             return board.transition(task_id, "awaiting_merge", actor="agent:验证 Agent")
         except (StateError, ValueError, RuntimeError) as error:
             raise HTTPException(status_code=400, detail=str(error)) from error

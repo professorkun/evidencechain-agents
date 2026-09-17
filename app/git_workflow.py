@@ -91,10 +91,23 @@ def verify_task_worktree(task_id: str, record: dict[str, Any]) -> tuple[Verifica
     return result, merge_plan(lease, result)
 
 
+def verified_worktree_commit(task_id: str, record: dict[str, Any]) -> str:
+    lease, _, _ = lease_from_record(task_id, record)
+    if run_git(lease.path, "status", "--porcelain"):
+        raise ContractError("worktree has uncommitted changes; execution Agent must commit before verification")
+    commit = run_git(lease.path, "rev-parse", "HEAD")
+    if commit == lease.base_commit:
+        raise ContractError("worktree has no committed changes beyond the task base")
+    return commit
+
+
 def merge_verified_task(task_id: str, record: dict[str, Any]) -> str:
     lease, _, repository = lease_from_record(task_id, record)
     if run_git(repository, "status", "--porcelain"):
         raise ContractError("repository has uncommitted changes; refuse to merge")
+    verified_commit = str(record.get("verified_commit", ""))
+    if not verified_commit or run_git(lease.path, "rev-parse", "HEAD") != verified_commit:
+        raise ContractError("worktree changed after verification; verify again before merging")
     run_git(repository, "merge", "--ff-only", lease.branch)
     return run_git(repository, "rev-parse", "HEAD")
 

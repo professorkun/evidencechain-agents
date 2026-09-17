@@ -1,4 +1,4 @@
-# Windows Codex Multi-Agent Collaboration
+# EvidenceChain Agents（证据链协同）
 
 一个面向本机 Codex 的、以审查和证据为中心的多 Agent 协作方案。它把复杂任务拆成不同职责的角色，由主控统一决策，并在任何写入或外部操作前保留人工确认点。
 

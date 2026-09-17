@@ -98,6 +98,16 @@ class TaskBoard:
                     created_at TEXT NOT NULL,
                     FOREIGN KEY(task_id) REFERENCES tasks(id)
                 );
+                CREATE TABLE IF NOT EXISTS agent_runs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    task_id TEXT NOT NULL,
+                    role TEXT NOT NULL,
+                    phase TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(task_id) REFERENCES tasks(id)
+                );
                 """
             )
 
@@ -132,6 +142,9 @@ class TaskBoard:
             reports = connection.execute(
                 "SELECT role, status, content, created_at FROM agent_reports WHERE task_id = ? ORDER BY id", (task_id,)
             ).fetchall()
+            runs = connection.execute(
+                "SELECT role, phase, status, content, created_at FROM agent_runs WHERE task_id = ? ORDER BY id", (task_id,)
+            ).fetchall()
         return {
             "id": row["id"],
             "title": row["title"],
@@ -146,6 +159,10 @@ class TaskBoard:
             "agent_reports": [
                 {"role": report["role"], "status": report["status"], "content": report["content"], "at": report["created_at"]}
                 for report in reports
+            ],
+            "agent_runs": [
+                {"role": run["role"], "phase": run["phase"], "status": run["status"], "content": run["content"], "at": run["created_at"]}
+                for run in runs
             ],
         }
 
@@ -193,4 +210,14 @@ class TaskBoard:
                     (task_id, role, "completed", content, now()),
                 )
                 self._event(connection, task_id, f"agent:{role}", "discussion_completed", {"role": role})
+        return self.get_task(task_id)
+
+    def save_agent_run(self, task_id: str, role: str, phase: str, status: str, content: str) -> dict[str, Any]:
+        self.get_task(task_id)
+        with self._connect() as connection:
+            connection.execute(
+                "INSERT INTO agent_runs (task_id, role, phase, status, content, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                (task_id, role, phase, status, content, now()),
+            )
+            self._event(connection, task_id, f"agent:{role}", f"{phase}_{status}", {"phase": phase})
         return self.get_task(task_id)

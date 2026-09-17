@@ -53,3 +53,23 @@ def test_dashboard_runs_three_discussion_roles_before_approval(tmp_path) -> None
     assert [report["role"] for report in reports] == ["方案 Agent", "反方 Agent", "调研 Agent"]
     assert all("离线模拟" in report["content"] for report in reports)
     assert client.post(f"/api/tasks/{task_id}/transition/awaiting_approval").status_code == 200
+
+
+def test_dashboard_runs_readonly_executor_and_verifier_after_approval(tmp_path) -> None:
+    client = TestClient(create_app(tmp_path / "taskboard.sqlite3"))
+    task = client.post("/api/tasks", json={"title": "执行与验证演练"}).json()
+    task_id = task["id"]
+    client.post(f"/api/tasks/{task_id}/transition/deliberating")
+    client.post(f"/api/tasks/{task_id}/discuss")
+    client.post(f"/api/tasks/{task_id}/transition/awaiting_approval")
+    client.post(f"/api/tasks/{task_id}/approve", json={"action": "approve_readonly"})
+
+    executed = client.post(f"/api/tasks/{task_id}/execute-readonly")
+    assert executed.status_code == 200
+    assert executed.json()["status"] == "verifying"
+    assert executed.json()["agent_runs"][-1]["role"] == "执行 Agent"
+
+    verified = client.post(f"/api/tasks/{task_id}/verify")
+    assert verified.status_code == 200
+    assert verified.json()["status"] == "awaiting_merge"
+    assert verified.json()["agent_runs"][-1]["role"] == "验证 Agent"

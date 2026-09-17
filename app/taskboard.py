@@ -116,6 +116,9 @@ class TaskBoard:
                 );
                 """
             )
+            columns = {row["name"] for row in connection.execute("PRAGMA table_info(agent_reports)")}
+            if "source" not in columns:
+                connection.execute("ALTER TABLE agent_reports ADD COLUMN source TEXT NOT NULL DEFAULT 'dashboard-mock'")
 
     def create_task(self, title: str, contract: dict[str, Any] | None = None) -> dict[str, Any]:
         if not title.strip():
@@ -146,7 +149,7 @@ class TaskBoard:
                 "SELECT actor, event_type, detail_json, created_at FROM events WHERE task_id = ? ORDER BY id", (task_id,)
             ).fetchall()
             reports = connection.execute(
-                "SELECT role, status, content, created_at FROM agent_reports WHERE task_id = ? ORDER BY id", (task_id,)
+                "SELECT role, status, content, source, created_at FROM agent_reports WHERE task_id = ? ORDER BY id", (task_id,)
             ).fetchall()
             runs = connection.execute(
                 "SELECT role, phase, status, content, created_at FROM agent_runs WHERE task_id = ? ORDER BY id", (task_id,)
@@ -164,7 +167,7 @@ class TaskBoard:
                 for event in events
             ],
             "agent_reports": [
-                {"role": report["role"], "status": report["status"], "content": report["content"], "at": report["created_at"]}
+                {"role": report["role"], "status": report["status"], "content": report["content"], "source": report["source"], "at": report["created_at"]}
                 for report in reports
             ],
             "agent_runs": [
@@ -205,7 +208,7 @@ class TaskBoard:
             )
         return self.transition(task_id, "queued", actor=f"approval:{approver}")
 
-    def save_agent_reports(self, task_id: str, reports: dict[str, str]) -> dict[str, Any]:
+    def save_agent_reports(self, task_id: str, reports: dict[str, str], *, source: str = "dashboard-mock") -> dict[str, Any]:
         task = self.get_task(task_id)
         if task["status"] != "deliberating":
             raise StateError("discussion can only run while a task is deliberating")
@@ -214,10 +217,10 @@ class TaskBoard:
         with self._connect() as connection:
             for role, content in reports.items():
                 connection.execute(
-                    "INSERT INTO agent_reports (task_id, role, status, content, created_at) VALUES (?, ?, ?, ?, ?)",
-                    (task_id, role, "completed", content, now()),
+                    "INSERT INTO agent_reports (task_id, role, status, content, source, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                    (task_id, role, "completed", content, source, now()),
                 )
-                self._event(connection, task_id, f"agent:{role}", "discussion_completed", {"role": role})
+                self._event(connection, task_id, f"agent:{role}", "discussion_completed", {"role": role, "source": source})
         return self.get_task(task_id)
 
     def save_agent_run(self, task_id: str, role: str, phase: str, status: str, content: str) -> dict[str, Any]:

@@ -57,6 +57,29 @@ def test_dashboard_runs_three_discussion_roles_before_approval(tmp_path) -> None
     assert client.post(f"/api/tasks/{task_id}/transition/awaiting_approval").status_code == 200
 
 
+def test_dashboard_imports_real_codex_reports_without_relabeling_them_as_mock(tmp_path) -> None:
+    client = TestClient(create_app(tmp_path / "taskboard.sqlite3"))
+    task = client.post("/api/tasks", json={"title": "真实协作归档"}).json()
+    task_id = task["id"]
+    client.post(f"/api/tasks/{task_id}/transition/deliberating")
+
+    imported = client.post(
+        f"/api/tasks/{task_id}/import-reports",
+        json={"reports": {"调研 Agent": "已读取本机证据；未调用工作台模拟模型。"}},
+    )
+
+    assert imported.status_code == 200
+    assert imported.json()["agent_reports"] == [
+        {
+            "role": "调研 Agent",
+            "status": "completed",
+            "content": "已读取本机证据；未调用工作台模拟模型。",
+            "source": "codex-live-import",
+            "at": imported.json()["agent_reports"][0]["at"],
+        }
+    ]
+
+
 def test_dashboard_runs_readonly_executor_and_verifier_after_approval(tmp_path) -> None:
     client = TestClient(create_app(tmp_path / "taskboard.sqlite3"))
     task = client.post("/api/tasks", json={"title": "执行与验证演练"}).json()

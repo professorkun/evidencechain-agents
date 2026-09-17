@@ -40,6 +40,13 @@ class ApprovalRequest(BaseModel):
     approver: str = "user"
 
 
+class ImportReportsRequest(BaseModel):
+    """Explicitly imported reports from a real Codex collaboration turn."""
+
+    reports: dict[str, str]
+    source: str = "codex-live-import"
+
+
 class MergeRequest(BaseModel):
     confirm: bool = False
 
@@ -91,6 +98,16 @@ def create_app(
             raise HTTPException(status_code=400, detail=str(error)) from error
         except (RuntimeError, ValueError) as error:
             raise HTTPException(status_code=503, detail=f"discussion agents unavailable: {error}") from error
+
+    @app.post("/api/tasks/{task_id}/import-reports")
+    def import_reports(task_id: str, request: ImportReportsRequest) -> dict[str, Any]:
+        """Record actual external role outputs; never relabel them as model calls from this dashboard."""
+        if not request.reports or any(not role.strip() or not content.strip() for role, content in request.reports.items()):
+            raise HTTPException(status_code=400, detail="reports must contain non-empty role names and content")
+        try:
+            return board.save_agent_reports(task_id, request.reports, source=request.source)
+        except StateError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
 
     @app.post("/api/tasks/{task_id}/execute-readonly")
     async def execute_readonly(task_id: str) -> dict[str, Any]:

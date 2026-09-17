@@ -38,3 +38,18 @@ def test_dashboard_serves_local_board_and_approval_api(tmp_path) -> None:
 
     assert approved.status_code == 200
     assert approved.json()["status"] == "queued"
+
+
+def test_dashboard_runs_three_discussion_roles_before_approval(tmp_path) -> None:
+    client = TestClient(create_app(tmp_path / "taskboard.sqlite3"))
+    created = client.post("/api/tasks", json={"title": "多角色讨论演练"}).json()
+    task_id = created["id"]
+    client.post(f"/api/tasks/{task_id}/transition/deliberating")
+
+    discussed = client.post(f"/api/tasks/{task_id}/discuss")
+
+    assert discussed.status_code == 200
+    reports = discussed.json()["agent_reports"]
+    assert [report["role"] for report in reports] == ["方案 Agent", "反方 Agent", "调研 Agent"]
+    assert all("离线模拟" in report["content"] for report in reports)
+    assert client.post(f"/api/tasks/{task_id}/transition/awaiting_approval").status_code == 200

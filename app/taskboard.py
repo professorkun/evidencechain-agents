@@ -89,6 +89,15 @@ class TaskBoard:
                     created_at TEXT NOT NULL,
                     FOREIGN KEY(task_id) REFERENCES tasks(id)
                 );
+                CREATE TABLE IF NOT EXISTS agent_reports (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    task_id TEXT NOT NULL,
+                    role TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(task_id) REFERENCES tasks(id)
+                );
                 """
             )
 
@@ -120,6 +129,9 @@ class TaskBoard:
             events = connection.execute(
                 "SELECT actor, event_type, detail_json, created_at FROM events WHERE task_id = ? ORDER BY id", (task_id,)
             ).fetchall()
+            reports = connection.execute(
+                "SELECT role, status, content, created_at FROM agent_reports WHERE task_id = ? ORDER BY id", (task_id,)
+            ).fetchall()
         return {
             "id": row["id"],
             "title": row["title"],
@@ -130,6 +142,10 @@ class TaskBoard:
             "events": [
                 {"actor": event["actor"], "type": event["event_type"], "detail": json.loads(event["detail_json"]), "at": event["created_at"]}
                 for event in events
+            ],
+            "agent_reports": [
+                {"role": report["role"], "status": report["status"], "content": report["content"], "at": report["created_at"]}
+                for report in reports
             ],
         }
 
@@ -163,3 +179,18 @@ class TaskBoard:
                 (task_id, action, approver, now()),
             )
         return self.transition(task_id, "queued", actor=f"approval:{approver}")
+
+    def save_agent_reports(self, task_id: str, reports: dict[str, str]) -> dict[str, Any]:
+        task = self.get_task(task_id)
+        if task["status"] != "deliberating":
+            raise StateError("discussion can only run while a task is deliberating")
+        if task["agent_reports"]:
+            raise StateError("discussion reports already exist for this task")
+        with self._connect() as connection:
+            for role, content in reports.items():
+                connection.execute(
+                    "INSERT INTO agent_reports (task_id, role, status, content, created_at) VALUES (?, ?, ?, ?, ?)",
+                    (task_id, role, "completed", content, now()),
+                )
+                self._event(connection, task_id, f"agent:{role}", "discussion_completed", {"role": role})
+        return self.get_task(task_id)

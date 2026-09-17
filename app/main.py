@@ -75,6 +75,16 @@ async def research_node(state: WorkbenchState) -> dict[str, str]:
     return {"research": await role_reply("调研", "说明需要的只读证据和验证方式。", state["task"])}
 
 
+async def run_discussion(task: str) -> dict[str, str]:
+    """Run the three read-only discussion roles concurrently for the task board."""
+    plan, risk, research = await asyncio.gather(
+        role_reply("方案", "提出最小可执行方案和任务拆分。", task),
+        role_reply("反方", "找出风险、依赖和不能并行的部分。", task),
+        role_reply("调研", "说明需要的只读证据和验证方式。", task),
+    )
+    return {"方案 Agent": plan, "反方 Agent": risk, "调研 Agent": research}
+
+
 def synthesize_node(state: WorkbenchState) -> dict[str, str]:
     return {
         "synthesis": "\n".join(

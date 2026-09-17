@@ -10,6 +10,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from app.taskboard import StateError, TaskBoard
+from app.main import run_discussion
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -59,6 +60,17 @@ def create_app(database_path: Path = DEFAULT_DATABASE) -> FastAPI:
             return board.approve(task_id, request.action, approver=request.approver)
         except StateError as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
+
+    @app.post("/api/tasks/{task_id}/discuss")
+    async def discuss(task_id: str) -> dict[str, Any]:
+        try:
+            task = board.get_task(task_id)
+            reports = await run_discussion(task["title"])
+            return board.save_agent_reports(task_id, reports)
+        except StateError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        except (RuntimeError, ValueError) as error:
+            raise HTTPException(status_code=503, detail=f"discussion agents unavailable: {error}") from error
 
     return app
 

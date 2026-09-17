@@ -65,6 +65,10 @@ uv run python -m pytest
 
 测试命令中的 `{python}` 是受控占位符：由主控解析为当前受管理的 Python 解释器，避免 worktree 因未复制虚拟环境而使用错误解释器。
 
+## 第三期本机看板（第一版）
+
+第三期第一版提供 SQLite 任务状态、审计记录与本机确认 API；看板只监听 `127.0.0.1`，不派发 Agent、不执行 SSH、不自动合并。运行 `scripts/open-dashboard.ps1` 可打开本机看板；运行 `scripts/stop-dashboard.ps1` 停止对应端口的本机服务。
+
 ## 安全边界
 
 - 不提交密钥、个人路径、运行报告或缓存。

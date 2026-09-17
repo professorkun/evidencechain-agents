@@ -1,0 +1,40 @@
+<main id="workbench">
+  <header>
+    <div><strong>多 Agent 工作台</strong><span>仅本机运行 · 所有写入与远程操作需确认</span></div>
+    <button id="new-task" type="button">新建任务</button>
+  </header>
+  <section id="create-panel" hidden>
+    <label>任务名称 <input id="task-title" placeholder="例如：整理测试报告" /></label>
+    <button id="create-submit" type="button">保存为草稿</button>
+  </section>
+  <section class="board" aria-label="任务看板">
+    <div><h2>讨论中</h2><div data-column="deliberating"></div></div>
+    <div><h2>待确认</h2><div data-column="awaiting_approval"></div></div>
+    <div><h2>执行中</h2><div data-column="queued,running"></div></div>
+    <div><h2>验证 / 待合并</h2><div data-column="verifying,awaiting_merge"></div></div>
+  </section>
+  <section id="detail" aria-live="polite"><p>选择或创建一个任务以查看合同、审批与执行记录。</p></section>
+</main>
+<style>
+  #workbench { color: #e8edf7; background: #111827; min-height: 100vh; padding: 24px; font: 15px system-ui, sans-serif; }
+  header { display:flex; justify-content:space-between; align-items:center; gap:16px; margin-bottom:18px; }
+  header strong { font-size:24px; display:block; } header span { color:#9ca3af; font-size:13px; }
+  button { background:#2563eb; color:white; border:0; border-radius:7px; padding:9px 13px; cursor:pointer; } button:hover { background:#1d4ed8; }
+  #create-panel { background:#1f2937; padding:14px; border-radius:8px; margin-bottom:16px; } input { margin:0 10px; padding:8px; min-width:260px; }
+  .board { display:grid; grid-template-columns:repeat(4,minmax(190px,1fr)); gap:14px; } .board > div { background:#182235; border-radius:10px; padding:12px; min-height:280px; }
+  h2 { font-size:15px; margin:0 0 12px; color:#cbd5e1; }.task { background:#263247; padding:12px; border-radius:8px; margin:8px 0; cursor:pointer; border-left:3px solid #60a5fa; }.task small { display:block; margin-top:8px; color:#a8b6ca; }
+  #detail { margin-top:16px; background:#1f2937; border-radius:10px; padding:16px; min-height:120px; } #detail h3 { margin-top:0; } code { color:#93c5fd; } .event { color:#cbd5e1; font-size:13px; margin:5px 0; }
+  .empty { color:#6b7280; font-size:13px; } @media (max-width:800px) { .board { grid-template-columns:1fr 1fr; } } @media (max-width:480px) { .board { grid-template-columns:1fr; } }
+</style>
+<script>
+const root = document.getElementById('workbench');
+const detail = document.getElementById('detail');
+const statuses = {deliberating:['deliberating','draft'], awaiting_approval:['awaiting_approval'], 'queued,running':['queued','running'], 'verifying,awaiting_merge':['verifying','awaiting_merge']};
+async function request(url, options) { const response = await fetch(url, options); if (!response.ok) throw new Error((await response.json()).detail); return response.json(); }
+function taskCard(task) { const card = document.createElement('article'); card.className='task'; card.innerHTML=`<strong>${task.title}</strong><small>${task.id} · ${task.status}</small>`; card.onclick=()=>showDetail(task.id); return card; }
+async function load() { const tasks = await request('/api/tasks'); for (const column of document.querySelectorAll('[data-column]')) { column.replaceChildren(); const shown=tasks.filter(task=>statuses[column.dataset.column].includes(task.status)); if (!shown.length) column.innerHTML='<p class="empty">暂无任务</p>'; shown.forEach(task=>column.append(taskCard(task))); } }
+async function showDetail(id) { const tasks = await request('/api/tasks'); const task=tasks.find(item=>item.id===id); if (!task) return; const contract=Object.keys(task.contract).length ? `<pre>${JSON.stringify(task.contract,null,2)}</pre>` : '尚未附加任务合同'; const events=task.events.map(event=>`<div class="event">${event.at} · ${event.actor} · ${event.type}</div>`).join(''); detail.innerHTML=`<h3>${task.title}</h3><p>状态：<code>${task.status}</code></p><h4>任务合同</h4>${contract}<h4>审计记录</h4>${events || '暂无'}`; if (task.status==='awaiting_approval') { const button=document.createElement('button'); button.textContent='确认进入队列'; button.onclick=async()=>{ await request('/api/tasks/'+id+'/approve',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({})}); await load(); await showDetail(id); }; detail.append(button); } }
+document.getElementById('new-task').onclick=()=>document.getElementById('create-panel').hidden=false;
+document.getElementById('create-submit').onclick=async()=>{ const input=document.getElementById('task-title'); const task=await request('/api/tasks',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title:input.value})}); await request('/api/tasks/'+task.id+'/transition/deliberating',{method:'POST'}); const after=await request('/api/tasks/'+task.id+'/transition/awaiting_approval',{method:'POST'}); input.value=''; document.getElementById('create-panel').hidden=true; await load(); await showDetail(after.id); };
+load();
+</script>

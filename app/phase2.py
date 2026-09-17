@@ -11,6 +11,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import time
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
@@ -228,6 +229,11 @@ def changed_files(worktree: Path, base_commit: str) -> tuple[str, ...]:
     return tuple(line for line in output.splitlines() if line)
 
 
+def resolve_test_command(command: tuple[str, ...]) -> tuple[str, ...]:
+    """Replace the portable contract token with this controller's interpreter."""
+    return tuple(sys.executable if part == "{python}" else part for part in command)
+
+
 def verify_worktree(worktree: Path, contract: TaskContract, base_commit: str) -> VerificationResult:
     contract = contract.validate()
     changed = changed_files(worktree, base_commit)
@@ -238,7 +244,9 @@ def verify_worktree(worktree: Path, contract: TaskContract, base_commit: str) ->
     )
     command_results: list[str] = []
     for command in contract.test_commands:
-        completed = subprocess.run(command, cwd=worktree, text=True, capture_output=True, check=False, timeout=60)
+        completed = subprocess.run(
+            resolve_test_command(command), cwd=worktree, text=True, capture_output=True, check=False, timeout=60
+        )
         output = (completed.stdout + completed.stderr).strip()
         command_results.append(f"exit={completed.returncode}\n{output}")
     return VerificationResult(changed, outside, tuple(command_results))

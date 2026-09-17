@@ -12,6 +12,7 @@ from app.phase2 import (
     TaskContract,
     create_worktree,
     merge_plan,
+    resolve_test_command,
     verify_worktree,
 )
 
@@ -21,7 +22,7 @@ def contract(*, paths: tuple[str, ...] = ("src",)) -> TaskContract:
         task_id="demo-task",
         base_ref="main",
         allowed_paths=paths,
-        test_commands=(("python", "-c", "print('verified')"),),
+        test_commands=(("{python}", "-c", "print('verified')"),),
         acceptance_criteria=("tests pass",),
     )
 
@@ -51,6 +52,11 @@ def test_contract_rejects_parent_escape() -> None:
 
 def test_contract_json_round_trip() -> None:
     assert TaskContract.from_json(contract().to_json()) == contract()
+
+
+def test_python_token_resolves_to_the_controller_interpreter() -> None:
+    assert resolve_test_command(("{python}", "-V"))[1:] == ("-V",)
+    assert resolve_test_command(("{python}", "-V"))[0].endswith("python.exe")
 
 
 def test_range_locks_allow_disjoint_ranges_and_block_overlap(tmp_path: Path) -> None:

@@ -7,7 +7,7 @@
   ],
   "test_commands": [
     [
-      "python",
+      "{python}",
       "-m",
       "pytest",
       "tests/test_calculator.py"

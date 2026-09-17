@@ -63,6 +63,8 @@ uv run python -m pytest
 
 `examples/contracts/phase2-sample.json` 展示任务合同的最小格式。先验证合同；只有在调用者传入显式的 `--approve-worktree` 后，第二期工具才允许建立任务分支和隔离 worktree。它不会自动修改 `main` 或自动合并。
 
+测试命令中的 `{python}` 是受控占位符：由主控解析为当前受管理的 Python 解释器，避免 worktree 因未复制虚拟环境而使用错误解释器。
+
 ## 安全边界
 
 - 不提交密钥、个人路径、运行报告或缓存。

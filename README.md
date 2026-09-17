@@ -67,7 +67,7 @@ uv run python -m pytest
 
 ## 第三期本机看板（第一版）
 
-第三期第一版提供 SQLite 任务状态、审计记录与本机确认 API；看板只监听 `127.0.0.1`，不派发 Agent、不执行 SSH、不自动合并。运行 `scripts/open-dashboard.ps1` 可打开本机看板；运行 `scripts/stop-dashboard.ps1` 停止对应端口的本机服务。
+第三期第一版提供 SQLite 任务状态、审计记录与本机确认 API；看板只监听 `127.0.0.1`，不派发 Agent、不执行 SSH、不自动合并。双击 `scripts/open-dashboard.cmd` 可打开本机看板；它只对本次启动使用 PowerShell `Bypass`，不修改系统全局执行策略。也可在终端运行 `PowerShell -NoProfile -ExecutionPolicy Bypass -File .\scripts\open-dashboard.ps1`。运行 `scripts/stop-dashboard.ps1` 停止对应端口的本机服务。
 
 ## 安全边界
 

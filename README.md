@@ -69,6 +69,20 @@ uv run python -m pytest
 
 第三期第一版提供 SQLite 任务状态、审计记录与本机确认 API；看板只监听 `127.0.0.1`，不派发 Agent、不执行 SSH、不自动合并。双击桌面的“Agent工作台”快捷方式可打开本机看板；它只对本次启动使用 PowerShell `Bypass`，不修改系统全局执行策略。项目内也保留 `scripts/open-dashboard.cmd`。运行 `scripts/stop-dashboard.ps1` 停止对应端口的本机服务。
 
+## Codex 任务桥接（第一版）
+
+工作台提供本机事件入口 `POST /api/events`，用于接收 Codex 侧桥接器的幂等事件。事件至少需要 `external_task_id`、`title`、`event_id` 和 `event_type`；可选状态包括 `running`、`verifying`、`completed`、`failed`、`cancelled` 和 `interrupted_needs_review`。相同 `event_id` 重复发送不会重复写入审计记录。
+
+Windows 侧可使用 `scripts/post-workbench-event.ps1` 发送事件：
+
+```powershell
+.\scripts\post-workbench-event.ps1 -ExternalTaskId "codex-thread-123" -Title "整理测试报告" -EventType "execution.started" -Status running -Message "开始执行"
+```
+
+默认启动看板只启动工作台本身，不自动启动 Codex 桥接器；这是为了保持工作台作为任务主控和唯一确认入口。需要做被动观察时，再单独启动 `app.codex_bridge`。桥接器通过本机 Codex app-server 读取线程元数据，按用户明确指定的本机工作目录过滤，并把线程状态回写到工作台；桥接导入的 Codex 任务标记为“只读观察”，不能在工作台批准、排队或执行。桥接器只读 Codex 会话，不创建、修改、批准或终止 Codex 任务。
+
+工作台任务必须经过“讨论 → 待确认 → 用户确认 → 执行 → 验证 → 完成”。失败、阻塞或中断的工作台任务可以重新提交确认；执行中的工作台任务可以取消。直接调用状态接口不能绕过审批记录。
+
 ## 安全边界
 
 - 不提交密钥、个人路径、运行报告或缓存。

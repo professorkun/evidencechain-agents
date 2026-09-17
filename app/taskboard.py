@@ -25,6 +25,8 @@ STATUSES = (
     "interrupted_needs_review",
 )
 
+VISIBLE_HISTORY_STATUSES = {"completed", "failed", "blocked", "cancelled", "interrupted_needs_review"}
+
 TRANSITIONS = {
     "draft": {"deliberating", "cancelled"},
     "deliberating": {"awaiting_approval", "blocked", "cancelled"},
@@ -69,6 +71,10 @@ class TaskBoard:
                     title TEXT NOT NULL,
                     status TEXT NOT NULL,
                     contract_json TEXT NOT NULL,
+                    source TEXT NOT NULL DEFAULT 'workbench',
+                    external_task_id TEXT,
+                    sync_state TEXT NOT NULL DEFAULT 'local',
+                    control_mode TEXT NOT NULL DEFAULT 'workbench',
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
@@ -78,6 +84,7 @@ class TaskBoard:
                     actor TEXT NOT NULL,
                     event_type TEXT NOT NULL,
                     detail_json TEXT NOT NULL,
+                    external_event_id TEXT,
                     created_at TEXT NOT NULL,
                     FOREIGN KEY(task_id) REFERENCES tasks(id)
                 );
@@ -116,11 +123,35 @@ class TaskBoard:
                 );
                 """
             )
+            task_columns = {row["name"] for row in connection.execute("PRAGMA table_info(tasks)")}
+            if "source" not in task_columns:
+                connection.execute("ALTER TABLE tasks ADD COLUMN source TEXT NOT NULL DEFAULT 'workbench'")
+            if "external_task_id" not in task_columns:
+                connection.execute("ALTER TABLE tasks ADD COLUMN external_task_id TEXT")
+            if "sync_state" not in task_columns:
+                connection.execute("ALTER TABLE tasks ADD COLUMN sync_state TEXT NOT NULL DEFAULT 'local'")
+            if "control_mode" not in task_columns:
+                connection.execute("ALTER TABLE tasks ADD COLUMN control_mode TEXT NOT NULL DEFAULT 'workbench'")
+            connection.execute("UPDATE tasks SET control_mode = 'observe_only' WHERE source = 'codex-bridge'")
+            event_columns = {row["name"] for row in connection.execute("PRAGMA table_info(events)")}
+            if "external_event_id" not in event_columns:
+                connection.execute("ALTER TABLE events ADD COLUMN external_event_id TEXT")
+            connection.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_external_id ON tasks(external_task_id) WHERE external_task_id IS NOT NULL")
+            connection.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_events_external_id ON events(task_id, external_event_id) WHERE external_event_id IS NOT NULL")
             columns = {row["name"] for row in connection.execute("PRAGMA table_info(agent_reports)")}
             if "source" not in columns:
                 connection.execute("ALTER TABLE agent_reports ADD COLUMN source TEXT NOT NULL DEFAULT 'dashboard-mock'")
 
-    def create_task(self, title: str, contract: dict[str, Any] | None = None) -> dict[str, Any]:
+    def create_task(
+        self,
+        title: str,
+        contract: dict[str, Any] | None = None,
+        *,
+        source: str = "workbench",
+        external_task_id: str | None = None,
+        sync_state: str = "local",
+        control_mode: str = "workbench",
+    ) -> dict[str, Any]:
         if not title.strip():
             raise StateError("task title is required")
         task_id = f"task-{uuid.uuid4().hex[:8]}"
@@ -128,17 +159,33 @@ class TaskBoard:
         payload = json.dumps(contract or {}, ensure_ascii=False)
         with self._connect() as connection:
             connection.execute(
-                "INSERT INTO tasks VALUES (?, ?, ?, ?, ?, ?)",
-                (task_id, title.strip(), "draft", payload, timestamp, timestamp),
+                "INSERT INTO tasks (id, title, status, contract_json, source, external_task_id, sync_state, control_mode, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (task_id, title.strip(), "draft", payload, source, external_task_id, sync_state, control_mode, timestamp, timestamp),
             )
             self._event(connection, task_id, "controller", "created", {"status": "draft"})
         return self.get_task(task_id)
 
-    def _event(self, connection: sqlite3.Connection, task_id: str, actor: str, event_type: str, detail: dict[str, Any]) -> None:
+    def _event(
+        self,
+        connection: sqlite3.Connection,
+        task_id: str,
+        actor: str,
+        event_type: str,
+        detail: dict[str, Any],
+        external_event_id: str | None = None,
+    ) -> bool:
+        if external_event_id:
+            existing = connection.execute(
+                "SELECT 1 FROM events WHERE task_id = ? AND external_event_id = ?",
+                (task_id, external_event_id),
+            ).fetchone()
+            if existing:
+                return False
         connection.execute(
-            "INSERT INTO events (task_id, actor, event_type, detail_json, created_at) VALUES (?, ?, ?, ?, ?)",
-            (task_id, actor, event_type, json.dumps(detail, ensure_ascii=False), now()),
+            "INSERT INTO events (task_id, actor, event_type, detail_json, external_event_id, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (task_id, actor, event_type, json.dumps(detail, ensure_ascii=False), external_event_id, now()),
         )
+        return True
 
     def get_task(self, task_id: str) -> dict[str, Any]:
         with self._connect() as connection:
@@ -160,6 +207,10 @@ class TaskBoard:
             "title": row["title"],
             "status": row["status"],
             "contract": json.loads(row["contract_json"]),
+            "source": row["source"],
+            "external_task_id": row["external_task_id"],
+            "sync_state": row["sync_state"],
+            "control_mode": row["control_mode"],
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
             "events": [
@@ -182,16 +233,92 @@ class TaskBoard:
             rows = connection.execute("SELECT id FROM tasks ORDER BY updated_at DESC").fetchall()
         return [self.get_task(row["id"]) for row in rows]
 
+    def delete_task(self, task_id: str) -> None:
+        """Permanently remove a local task and its audit records."""
+        with self._connect() as connection:
+            row = connection.execute("SELECT id FROM tasks WHERE id = ?", (task_id,)).fetchone()
+            if row is None:
+                raise StateError(f"unknown task: {task_id}")
+            for table in ("events", "approvals", "agent_reports", "agent_runs", "git_leases"):
+                connection.execute(f"DELETE FROM {table} WHERE task_id = ?", (task_id,))
+            connection.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+
+    def ingest_external_event(
+        self,
+        *,
+        external_task_id: str,
+        title: str,
+        event_id: str,
+        event_type: str,
+        status: str | None = None,
+        message: str = "",
+        output: str = "",
+    ) -> dict[str, Any]:
+        """Accept an idempotent event from a Codex-side bridge."""
+        if not external_task_id.strip() or not event_id.strip() or not event_type.strip():
+            raise StateError("external_task_id, event_id and event_type are required")
+        target = status or {
+            "task.started": "running",
+            "discussion.started": "deliberating",
+            "approval.required": "awaiting_approval",
+            "execution.started": "running",
+            "verification.started": "verifying",
+            "task.completed": "completed",
+            "task.failed": "failed",
+            "task.cancelled": "cancelled",
+            "task.interrupted": "interrupted_needs_review",
+        }.get(event_type)
+        if target and target not in STATUSES:
+            raise StateError(f"unknown external status: {target}")
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM tasks WHERE external_task_id = ?", (external_task_id,)
+            ).fetchone()
+            if row is None:
+                timestamp = now()
+                task_id = f"codex-{uuid.uuid4().hex[:8]}"
+                connection.execute(
+                    "INSERT INTO tasks (id, title, status, contract_json, source, external_task_id, sync_state, control_mode, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (task_id, title.strip() or f"Codex 任务 {external_task_id}", target or "draft", "{}", "codex-bridge", external_task_id, "live", "observe_only", timestamp, timestamp),
+                )
+            else:
+                task_id = row["id"]
+                current = row["status"]
+                if target and target != current:
+                    workbench_task = row["source"] == "workbench"
+                    allowed = target in TRANSITIONS.get(current, set())
+                    if workbench_task and not allowed:
+                        raise StateError(f"external event cannot bypass workbench gate: {current} to {target}")
+                    connection.execute(
+                        "UPDATE tasks SET status = ?, sync_state = 'live', updated_at = ? WHERE id = ?",
+                        (target, now(), task_id),
+                    )
+                    self._event(connection, task_id, "codex-bridge", "transition", {"from": current, "to": target}, external_event_id=f"{event_id}:transition")
+                else:
+                    connection.execute("UPDATE tasks SET sync_state = 'live', updated_at = ? WHERE id = ?", (now(), task_id))
+            detail = {"external_task_id": external_task_id, "status": target, "message": message, "output": output}
+            self._event(connection, task_id, "codex-bridge", event_type, detail, external_event_id=event_id)
+        return self.get_task(task_id)
+
     def transition(self, task_id: str, target_status: str, *, actor: str = "controller") -> dict[str, Any]:
         if target_status not in STATUSES:
             raise StateError(f"unknown status: {target_status}")
         with self._connect() as connection:
-            row = connection.execute("SELECT status FROM tasks WHERE id = ?", (task_id,)).fetchone()
+            row = connection.execute("SELECT status, control_mode FROM tasks WHERE id = ?", (task_id,)).fetchone()
             if row is None:
                 raise StateError(f"unknown task: {task_id}")
+            if row["control_mode"] == "observe_only":
+                raise StateError("Codex observed tasks are read-only in the workbench")
             current_status = row["status"]
             if target_status not in TRANSITIONS[current_status]:
                 raise StateError(f"cannot transition from {current_status} to {target_status}")
+            if target_status == "queued":
+                approval = connection.execute(
+                    "SELECT 1 FROM approvals WHERE task_id = ? ORDER BY id DESC LIMIT 1",
+                    (task_id,),
+                ).fetchone()
+                if approval is None:
+                    raise StateError("entering the execution queue requires explicit user approval")
             timestamp = now()
             connection.execute("UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?", (target_status, timestamp, task_id))
             self._event(connection, task_id, actor, "transition", {"from": current_status, "to": target_status})
@@ -207,6 +334,22 @@ class TaskBoard:
                 (task_id, action, approver, now()),
             )
         return self.transition(task_id, "queued", actor=f"approval:{approver}")
+
+    def cancel(self, task_id: str, *, actor: str = "user") -> dict[str, Any]:
+        task = self.get_task(task_id)
+        if task["control_mode"] == "observe_only":
+            raise StateError("Codex observed tasks are read-only in the workbench")
+        return self.transition(task_id, "cancelled", actor=f"{actor}:cancel")
+
+    def retry(self, task_id: str, *, actor: str = "user") -> dict[str, Any]:
+        task = self.get_task(task_id)
+        if task["control_mode"] == "observe_only":
+            raise StateError("Codex observed tasks are read-only in the workbench")
+        if task["status"] not in {"failed", "blocked", "interrupted_needs_review"}:
+            raise StateError("only failed, blocked, or interrupted tasks can be retried")
+        with self._connect() as connection:
+            self._event(connection, task_id, actor, "retry_requested", {"from": task["status"]})
+        return self.transition(task_id, "awaiting_approval", actor=f"{actor}:retry")
 
     def save_agent_reports(self, task_id: str, reports: dict[str, str], *, source: str = "dashboard-mock") -> dict[str, Any]:
         task = self.get_task(task_id)

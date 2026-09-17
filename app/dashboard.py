@@ -33,6 +33,8 @@ STATIC_PAGE = ROOT / "app" / "static" / "dashboard.html"
 class CreateTaskRequest(BaseModel):
     title: str
     contract: dict[str, Any] = {}
+    source: str = "workbench"
+    external_task_id: str | None = None
 
 
 class ApprovalRequest(BaseModel):
@@ -51,6 +53,16 @@ class MergeRequest(BaseModel):
     confirm: bool = False
 
 
+class ExternalEventRequest(BaseModel):
+    external_task_id: str
+    title: str = ""
+    event_id: str
+    event_type: str
+    status: str | None = None
+    message: str = ""
+    output: str = ""
+
+
 def create_app(
     database_path: Path = DEFAULT_DATABASE,
     worktrees_root: Path = WORKTREES_ROOT,
@@ -67,12 +79,41 @@ def create_app(
     def list_tasks() -> list[dict[str, Any]]:
         return board.list_tasks()
 
+    @app.get("/api/tasks/{task_id}")
+    def get_task(task_id: str) -> dict[str, Any]:
+        try:
+            return board.get_task(task_id)
+        except StateError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+
     @app.post("/api/tasks")
     def create_task(request: CreateTaskRequest) -> dict[str, Any]:
         try:
-            return board.create_task(request.title, request.contract)
+            return board.create_task(
+                request.title,
+                request.contract,
+                source=request.source,
+                external_task_id=request.external_task_id,
+                sync_state="live" if request.external_task_id else "local",
+                control_mode="observe_only" if request.source == "codex-bridge" else "workbench",
+            )
         except StateError as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
+
+    @app.post("/api/events")
+    def ingest_external_event(request: ExternalEventRequest) -> dict[str, Any]:
+        try:
+            return board.ingest_external_event(**request.model_dump())
+        except StateError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+
+    @app.delete("/api/tasks/{task_id}")
+    def delete_task(task_id: str) -> dict[str, bool]:
+        try:
+            board.delete_task(task_id)
+            return {"deleted": True}
+        except StateError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
 
     @app.post("/api/tasks/{task_id}/transition/{status}")
     def transition(task_id: str, status: str) -> dict[str, Any]:
@@ -85,6 +126,20 @@ def create_app(
     def approve(task_id: str, request: ApprovalRequest) -> dict[str, Any]:
         try:
             return board.approve(task_id, request.action, approver=request.approver)
+        except StateError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+
+    @app.post("/api/tasks/{task_id}/cancel")
+    def cancel(task_id: str) -> dict[str, Any]:
+        try:
+            return board.cancel(task_id)
+        except StateError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+
+    @app.post("/api/tasks/{task_id}/retry")
+    def retry(task_id: str) -> dict[str, Any]:
+        try:
+            return board.retry(task_id)
         except StateError as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
 

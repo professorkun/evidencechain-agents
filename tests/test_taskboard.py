@@ -28,6 +28,48 @@ def test_taskboard_rejects_invalid_transition(tmp_path) -> None:
         board.transition(task["id"], "running")
 
 
+def test_taskboard_cannot_bypass_approval_gate(tmp_path) -> None:
+    board = TaskBoard(tmp_path / "tasks.sqlite3")
+    task = board.create_task("不能绕过确认")
+    board.transition(task["id"], "deliberating")
+    board.transition(task["id"], "awaiting_approval")
+
+    with pytest.raises(StateError, match="requires explicit user approval"):
+        board.transition(task["id"], "queued")
+
+    approved = board.approve(task["id"], "approve_execution")
+    assert approved["status"] == "queued"
+
+
+def test_workbench_supports_cancel_and_retry_with_reapproval(tmp_path) -> None:
+    board = TaskBoard(tmp_path / "tasks.sqlite3")
+    task = board.create_task("可取消可重试")
+    board.transition(task["id"], "deliberating")
+    board.transition(task["id"], "awaiting_approval")
+    cancelled = board.cancel(task["id"])
+    assert cancelled["status"] == "cancelled"
+
+    retryable = board.create_task("失败后重试")
+    board.transition(retryable["id"], "deliberating")
+    board.transition(retryable["id"], "awaiting_approval")
+    board.approve(retryable["id"], "approve_execution")
+    board.transition(retryable["id"], "running")
+    board.transition(retryable["id"], "failed")
+    retried = board.retry(retryable["id"])
+    assert retried["status"] == "awaiting_approval"
+    assert any(event["type"] == "retry_requested" for event in retried["events"])
+
+
+def test_taskboard_deletes_local_task_and_related_records(tmp_path) -> None:
+    board = TaskBoard(tmp_path / "taskboard.sqlite3")
+    task = board.create_task("测试记录")
+    board.transition(task["id"], "deliberating")
+    board.delete_task(task["id"])
+
+    with pytest.raises(StateError, match="unknown task"):
+        board.get_task(task["id"])
+
+
 def test_dashboard_serves_local_board_and_approval_api(tmp_path) -> None:
     client = TestClient(create_app(tmp_path / "taskboard.sqlite3"))
     assert client.get("/").status_code == 200
@@ -40,6 +82,50 @@ def test_dashboard_serves_local_board_and_approval_api(tmp_path) -> None:
 
     assert approved.status_code == 200
     assert approved.json()["status"] == "queued"
+
+
+def test_external_bridge_registers_and_deduplicates_codex_events(tmp_path) -> None:
+    client = TestClient(create_app(tmp_path / "taskboard.sqlite3"))
+    payload = {
+        "external_task_id": "codex-thread-123",
+        "title": "Codex 外部任务",
+        "event_id": "evt-1",
+        "event_type": "task.started",
+        "message": "开始执行",
+    }
+    first = client.post("/api/events", json=payload)
+    second = client.post("/api/events", json=payload)
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert first.json()["status"] == "running"
+    assert first.json()["control_mode"] == "observe_only"
+    assert len(second.json()["events"]) == 1
+    assert second.json()["sync_state"] == "live"
+
+    completed = client.post(
+        "/api/events",
+        json={**payload, "event_id": "evt-2", "event_type": "task.completed", "status": "completed", "output": "已完成"},
+    )
+    assert completed.status_code == 200
+    assert completed.json()["status"] == "completed"
+    assert len(client.get("/api/tasks").json()) == 1
+
+
+def test_external_bridge_tasks_are_read_only_in_workbench(tmp_path) -> None:
+    client = TestClient(create_app(tmp_path / "taskboard.sqlite3"))
+    task = client.post(
+        "/api/events",
+        json={
+            "external_task_id": "codex-readonly-1",
+            "title": "外部只读任务",
+            "event_id": "evt-1",
+            "event_type": "task.started",
+        },
+    ).json()
+    response = client.post(f"/api/tasks/{task['id']}/transition/awaiting_approval")
+    assert response.status_code == 400
+    assert "read-only" in response.json()["detail"]
 
 
 def test_dashboard_runs_three_discussion_roles_before_approval(tmp_path) -> None:

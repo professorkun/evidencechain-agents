@@ -30,7 +30,7 @@ TRANSITIONS = {
     "deliberating": {"awaiting_approval", "blocked", "cancelled"},
     "awaiting_approval": {"queued", "cancelled"},
     "queued": {"running", "blocked", "cancelled"},
-    "running": {"verifying", "failed", "blocked", "interrupted_needs_review"},
+    "running": {"verifying", "failed", "blocked", "cancelled", "interrupted_needs_review"},
     "verifying": {"awaiting_merge", "completed", "failed", "blocked"},
     "awaiting_merge": {"completed", "cancelled", "blocked"},
     "blocked": {"awaiting_approval", "cancelled"},
@@ -108,6 +108,12 @@ class TaskBoard:
                     created_at TEXT NOT NULL,
                     FOREIGN KEY(task_id) REFERENCES tasks(id)
                 );
+                CREATE TABLE IF NOT EXISTS git_leases (
+                    task_id TEXT PRIMARY KEY,
+                    lease_json TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(task_id) REFERENCES tasks(id)
+                );
                 """
             )
 
@@ -145,6 +151,7 @@ class TaskBoard:
             runs = connection.execute(
                 "SELECT role, phase, status, content, created_at FROM agent_runs WHERE task_id = ? ORDER BY id", (task_id,)
             ).fetchall()
+            lease = connection.execute("SELECT lease_json FROM git_leases WHERE task_id = ?", (task_id,)).fetchone()
         return {
             "id": row["id"],
             "title": row["title"],
@@ -164,6 +171,7 @@ class TaskBoard:
                 {"role": run["role"], "phase": run["phase"], "status": run["status"], "content": run["content"], "at": run["created_at"]}
                 for run in runs
             ],
+            "git_lease": json.loads(lease["lease_json"]) if lease else None,
         }
 
     def list_tasks(self) -> list[dict[str, Any]]:
@@ -221,3 +229,21 @@ class TaskBoard:
             )
             self._event(connection, task_id, f"agent:{role}", f"{phase}_{status}", {"phase": phase})
         return self.get_task(task_id)
+
+    def save_git_lease(self, task_id: str, lease: dict[str, Any]) -> dict[str, Any]:
+        self.get_task(task_id)
+        with self._connect() as connection:
+            connection.execute(
+                "INSERT INTO git_leases (task_id, lease_json, updated_at) VALUES (?, ?, ?) "
+                "ON CONFLICT(task_id) DO UPDATE SET lease_json = excluded.lease_json, updated_at = excluded.updated_at",
+                (task_id, json.dumps(lease, ensure_ascii=False), now()),
+            )
+            self._event(connection, task_id, "controller", "git_lease_saved", {"branch": lease["branch"]})
+        return self.get_task(task_id)
+
+    def update_git_lease(self, task_id: str, **changes: Any) -> dict[str, Any]:
+        task = self.get_task(task_id)
+        if not task["git_lease"]:
+            raise StateError("task has no Git worktree lease")
+        lease = {**task["git_lease"], **changes}
+        return self.save_git_lease(task_id, lease)

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from fastapi.testclient import TestClient
 import pytest
+import subprocess
+from pathlib import Path
 
 from app.dashboard import create_app
 from app.taskboard import StateError, TaskBoard
@@ -73,3 +75,44 @@ def test_dashboard_runs_readonly_executor_and_verifier_after_approval(tmp_path) 
     assert verified.status_code == 200
     assert verified.json()["status"] == "awaiting_merge"
     assert verified.json()["agent_runs"][-1]["role"] == "验证 Agent"
+
+
+def test_dashboard_git_worktree_verify_merge_and_lock_release(tmp_path) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    subprocess.run(["git", "-C", str(repository), "init", "-b", "main"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repository), "config", "user.name", "Test User"], check=True)
+    subprocess.run(["git", "-C", str(repository), "config", "user.email", "test@example.invalid"], check=True)
+    (repository / "src").mkdir()
+    (repository / "src" / "demo.txt").write_text("before\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repository), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(repository), "commit", "-m", "seed"], check=True, capture_output=True)
+    contract = {
+        "repository": str(repository),
+        "base_ref": "main",
+        "allowed_paths": ["src"],
+        "test_commands": [["{python}", "-c", "print('verified')"]],
+        "acceptance_criteria": ["tests pass"],
+    }
+    client = TestClient(create_app(tmp_path / "taskboard.sqlite3", tmp_path / "worktrees", tmp_path / "locks"))
+    task = client.post("/api/tasks", json={"title": "Git 安全演练", "contract": contract}).json()
+    task_id = task["id"]
+    client.post(f"/api/tasks/{task_id}/transition/deliberating")
+    client.post(f"/api/tasks/{task_id}/transition/awaiting_approval")
+    client.post(f"/api/tasks/{task_id}/approve", json={"action": "approve_git"})
+
+    prepared = client.post(f"/api/tasks/{task_id}/prepare-git")
+    assert prepared.status_code == 200
+    worktree = Path(prepared.json()["git_lease"]["worktree"])
+    (worktree / "src" / "demo.txt").write_text("after\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(worktree), "add", "src/demo.txt"], check=True)
+    subprocess.run(["git", "-C", str(worktree), "commit", "-m", "change"], check=True, capture_output=True)
+
+    verified = client.post(f"/api/tasks/{task_id}/verify-git")
+    assert verified.status_code == 200
+    assert verified.json()["status"] == "awaiting_merge"
+    merged = client.post(f"/api/tasks/{task_id}/merge", json={"confirm": True})
+    assert merged.status_code == 200
+    assert merged.json()["status"] == "completed"
+    assert merged.json()["git_lease"]["lock_state"] == "released"
+    assert (repository / "src" / "demo.txt").read_text(encoding="utf-8") == "after\n"

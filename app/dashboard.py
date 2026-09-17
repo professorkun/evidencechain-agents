@@ -11,10 +11,21 @@ from pydantic import BaseModel
 
 from app.taskboard import StateError, TaskBoard
 from app.main import execute_readonly_node, run_discussion
+from app.git_workflow import (
+    contract_from_task,
+    executor_brief,
+    merge_verified_task,
+    prepare_task_worktree,
+    release_task_lock,
+    serialize_lease,
+    verify_task_worktree,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DATABASE = ROOT / "data" / "taskboard.sqlite3"
+WORKTREES_ROOT = ROOT / "data" / "worktrees"
+LOCKS_ROOT = ROOT / "data" / "locks"
 STATIC_PAGE = ROOT / "app" / "static" / "dashboard.html"
 
 
@@ -28,7 +39,15 @@ class ApprovalRequest(BaseModel):
     approver: str = "user"
 
 
-def create_app(database_path: Path = DEFAULT_DATABASE) -> FastAPI:
+class MergeRequest(BaseModel):
+    confirm: bool = False
+
+
+def create_app(
+    database_path: Path = DEFAULT_DATABASE,
+    worktrees_root: Path = WORKTREES_ROOT,
+    locks_root: Path = LOCKS_ROOT,
+) -> FastAPI:
     board = TaskBoard(database_path)
     app = FastAPI(title="Multi-Agent Workbench", docs_url=None, redoc_url=None)
 
@@ -108,6 +127,70 @@ def create_app(database_path: Path = DEFAULT_DATABASE) -> FastAPI:
             board.save_agent_run(task_id, "验证 Agent", "verification", "completed" if passed else "failed", report)
             return board.transition(task_id, "awaiting_merge" if passed else "failed", actor="agent:验证 Agent")
         except StateError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+
+    @app.post("/api/tasks/{task_id}/prepare-git")
+    def prepare_git(task_id: str) -> dict[str, Any]:
+        try:
+            task = board.get_task(task_id)
+            if task["status"] != "queued":
+                raise StateError("only an approved queued task can create a Git worktree")
+            if task["git_lease"]:
+                raise StateError("task already has a Git worktree lease")
+            lease, contract = prepare_task_worktree(task, worktrees_root, locks_root)
+            repository, _, _ = contract_from_task(task)
+            record = serialize_lease(lease, contract, repository)
+            board.save_git_lease(task_id, record)
+            board.save_agent_run(task_id, "执行 Agent", "git_execution", "ready", executor_brief(task, record))
+            return board.transition(task_id, "running", actor="agent:执行 Agent")
+        except (StateError, ValueError, RuntimeError) as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+
+    @app.post("/api/tasks/{task_id}/verify-git")
+    def verify_git(task_id: str) -> dict[str, Any]:
+        try:
+            task = board.get_task(task_id)
+            if task["status"] != "running" or not task["git_lease"]:
+                raise StateError("only a running Git task with an active worktree can be verified")
+            board.transition(task_id, "verifying", actor="agent:验证 Agent")
+            result, plan = verify_task_worktree(task_id, task["git_lease"])
+            passed = result.passed and bool(result.changed_files)
+            content = plan + "\n\n测试结果：\n" + "\n\n".join(result.command_results)
+            board.save_agent_run(task_id, "验证 Agent", "git_verification", "completed" if passed else "failed", content)
+            if not passed:
+                return board.transition(task_id, "failed", actor="agent:验证 Agent")
+            return board.transition(task_id, "awaiting_merge", actor="agent:验证 Agent")
+        except (StateError, ValueError, RuntimeError) as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+
+    @app.post("/api/tasks/{task_id}/merge")
+    def merge(task_id: str, request: MergeRequest) -> dict[str, Any]:
+        try:
+            if not request.confirm:
+                raise StateError("merge requires explicit confirmation")
+            task = board.get_task(task_id)
+            if task["status"] != "awaiting_merge" or not task["git_lease"]:
+                raise StateError("only verified Git tasks can be merged")
+            commit = merge_verified_task(task_id, task["git_lease"])
+            release_task_lock(task_id, task["git_lease"], locks_root)
+            board.update_git_lease(task_id, lock_state="released", merged_commit=commit)
+            board.save_agent_run(task_id, "主控", "merge", "completed", f"已按用户确认合并到本地目标分支。commit={commit}")
+            return board.transition(task_id, "completed", actor="approval:user-merge")
+        except (StateError, ValueError, RuntimeError) as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+
+    @app.post("/api/tasks/{task_id}/release-git-lock")
+    def release_git_lock(task_id: str) -> dict[str, Any]:
+        try:
+            task = board.get_task(task_id)
+            if task["status"] not in {"failed", "blocked", "cancelled", "completed"} or not task["git_lease"]:
+                raise StateError("a Git lock can only be released from a terminal task state")
+            if task["git_lease"].get("lock_state") == "released":
+                return task
+            release_task_lock(task_id, task["git_lease"], locks_root)
+            board.update_git_lease(task_id, lock_state="released")
+            return board.save_agent_run(task_id, "主控", "recovery", "completed", "已释放范围锁；worktree 保留以便审计或手动清理。")
+        except (StateError, ValueError, RuntimeError) as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
 
     return app
